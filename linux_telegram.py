@@ -660,7 +660,7 @@ async def button_callback(update, context):
         message = "⏳ Restarting services..."
         await query.message.reply_text(message, parse_mode='Markdown')
         _, error = api_post('/restart')
-        message = "✅ **Services Restarting!**\nBot may be offline for a moment." if not error"
+        message = "✅ **Services Restarting!**\nBot may be offline for a moment."
         keyboard = get_main_keyboard()
     
     # === HELP ===
@@ -805,4 +805,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
