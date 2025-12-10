@@ -59,6 +59,7 @@ GITHUB_API_URL = f"{GITHUB_BASE}/linux_api.py"
 GITHUB_TELEGRAM_URL = f"{GITHUB_BASE}/linux_telegram.py"
 GITHUB_FEATURES_URL = f"{GITHUB_BASE}/features.py"
 GITHUB_SAFETY_URL = f"{GITHUB_BASE}/linux_safety.py"
+EA_URL = f"{GITHUB_BASE}/linux_OBot.mq5"
 
 # Trading Params (Match Training Env)
 MIN_ATR = 1.0
@@ -609,8 +610,7 @@ def restart_service():
         return jsonify({'status': 'FAIL', 'message': str(e)}), 500
 
 @app.route('/update_ea', methods=['POST'])
-def update_expert_advisor():
-    EA_URL = 'https://raw.githubusercontent.com/bookhub10/models/main/linux_OBot.mq5' 
+def update_expert_advisor(): 
     EA_PATH = "/home/hp/.mt5/drive_c/Program Files/MetaTrader 5/MQL5/Experts/OBotTrading.mq5"
     TRIGGER_FILE = "/home/hp/Downloads/bot/COMPILE_NOW.trigger" 
 
@@ -665,4 +665,5 @@ if __name__ == '__main__':
     threading.Thread(target=news_scheduler, daemon=True).start()
     
     print("🚀 OBot RL API Started on Port 5000")
+
     app.run(host='0.0.0.0', port=5000)
