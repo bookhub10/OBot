@@ -30,7 +30,7 @@ input int    MaxConsecutiveLoss = 3;
 input int    PenaltyHours       = 1;
 
 // --- Hard Stop ---
-input double Emergency_SL_ATR   = 3.0;
+input double Emergency_SL_ATR   = 2.0;
 
 // --- 🎯 Trailing Stop & Break-Even Settings (Phase 1 Pro RM) ---
 input bool   UseTrailingStop       = true;   // Enable Trailing Stop
@@ -61,6 +61,10 @@ bool   BreakevenActive = false;
 bool   TrailingActive = false;
 double TrailingStopPct = 0.0;
 double PositionEntryBalance = 0.0;
+
+// 📰 Smart News Protection State
+bool   ShouldTightenSL = false;
+double NewsSLMultiplier = 2.0;  // Default to Emergency_SL_ATR
 
 //+------------------------------------------------------------------+
 //| JSON Helper Functions                                            |
@@ -229,6 +233,19 @@ void GetActionFromAPI() {
       
       // Optional: Log debug info
       double confidence = ExtractJsonDouble(json_res, "confidence");
+      
+      // 📰 Parse Smart News Protection flags
+      double tighten_sl = ExtractJsonDouble(json_res, "tighten_sl");
+      if(tighten_sl > 0) {
+         ShouldTightenSL = true;
+         double sl_mult = ExtractJsonDouble(json_res, "sl_atr_mult");
+         if(sl_mult > 0) NewsSLMultiplier = sl_mult;
+         Print("📰 News Protection: Tighten SL to ", DoubleToString(NewsSLMultiplier, 1), "x ATR");
+      } else {
+         ShouldTightenSL = false;
+         NewsSLMultiplier = Emergency_SL_ATR;  // Reset to default
+      }
+      
       Print("✅ API Response: Action=", LastAction, " ATR=", LastATR, 
             " Confidence=", confidence, " NewsRisk=", DoubleToString(NewsRiskMultiplier, 2));
             
@@ -348,7 +365,52 @@ void ClosePosition() {
 }
 
 //+------------------------------------------------------------------+
-//| 💰 Calculate Dynamic Lot Size (Match Training Kelly Logic)       |
+//| � Tighten Stop Loss for News Protection                        |
+//+------------------------------------------------------------------+
+void TightenStopLoss(double atr_multiplier) {
+   for(int i=PositionsTotal()-1; i>=0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionGetInteger(POSITION_MAGIC)==MagicNumber && 
+         PositionGetString(POSITION_SYMBOL)==_Symbol) {
+         
+         double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         double current_sl = PositionGetDouble(POSITION_SL);
+         long pos_type = PositionGetInteger(POSITION_TYPE);
+         
+         // Calculate new tight SL
+         double new_sl;
+         double dist = LastATR * atr_multiplier;
+         
+         if(pos_type == POSITION_TYPE_BUY) {
+            double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            new_sl = current_price - dist;
+            
+            // Only move SL up (tighter), never down
+            if(current_sl == 0 || new_sl > current_sl) {
+               if(trade.PositionModify(ticket, new_sl, 0)) {
+                  Print("📰 News SL Tightened: BUY SL moved to ", DoubleToString(new_sl, 2), 
+                        " (", DoubleToString(atr_multiplier, 1), "x ATR)");
+               }
+            }
+         }
+         else if(pos_type == POSITION_TYPE_SELL) {
+            double current_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            new_sl = current_price + dist;
+            
+            // Only move SL down (tighter), never up
+            if(current_sl == 0 || new_sl < current_sl) {
+               if(trade.PositionModify(ticket, new_sl, 0)) {
+                  Print("📰 News SL Tightened: SELL SL moved to ", DoubleToString(new_sl, 2),
+                        " (", DoubleToString(atr_multiplier, 1), "x ATR)");
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| �💰 Calculate Dynamic Lot Size (Match Training Kelly Logic)       |
 //+------------------------------------------------------------------+
 double CalculateDynamicLot() {
    if(!UseDynamicLot) return FixLotSize;
@@ -518,6 +580,11 @@ void OnTick() {
 
    // Get AI Decision
    GetActionFromAPI();
+   
+   // 📰 Smart News Protection: Tighten SL if flagged
+   if(ShouldTightenSL && PositionsTotal() > 0) {
+      TightenStopLoss(NewsSLMultiplier);
+   }
    
    // 🔥 FIX #4: Validate Action Before Execution
    if(LastAction == "" || LastAction == "ERROR") {

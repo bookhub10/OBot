@@ -75,6 +75,11 @@ LOCKDOWN_MINUTES_AFTER = 15    # Lock 15 min after
 WARNING_MINUTES = 120          # Warn 2 hours before (reduce position)
 NEWS_UPDATE_INTERVAL = 300     # Check every 5 min
 
+# 📰 Smart News Protection (Option C)
+NEWS_PROFIT_LOCK_PCT = 0.005   # ล็อคกำไรถ้า > 0.5% (0.005 = 0.5%)
+NEWS_MAX_LOSS_PCT = -0.01      # Cut loss ถ้า < -1% (-0.01 = -1%)
+NEWS_TIGHT_SL_ATR = 1.0        # SL แคบลง = 1.0 * ATR (ปกติ 2.0)
+
 # ForexFactory Free JSON API
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
@@ -381,8 +386,18 @@ def predict():
     # 1. Check Pre-conditions
     if bot_status["status"] != "RUNNING": 
         return jsonify({"action": "HOLD", "reason": "STOPPED"})
-    if bot_status["news_lock"]: 
-        return jsonify({"action": "HOLD", "reason": "NEWS_FILTER", "message": bot_status["news_message"]})
+    
+    # 📰 News Lock check (ถ้าไม่มี position เปิดอยู่ → block เลย)
+    # ถ้ามี position เปิดอยู่ → ให้ผ่านไป process Smart News Protection
+    if bot_status["news_lock"]:
+        req_check = request.get_json(force=True, silent=True)
+        if req_check:
+            pos_info_check = req_check.get('position', {'type': 0})
+            pos_type_check = pos_info_check.get('type', 0)
+            if pos_type_check == 0:  # ไม่มี position → block
+                return jsonify({"action": "HOLD", "reason": "NEWS_FILTER", "message": bot_status["news_message"]})
+            # มี position → ให้ผ่านไป Smart News Protection ด้านล่าง
+    
     if not bot_status['model_loaded']:
         return jsonify({"action": "HOLD", "reason": "MODEL_NOT_LOADED"})
     
@@ -472,6 +487,48 @@ def predict():
             
         # Normalize PnL
         pnl_pct = pnl_val / TRAINING_BALANCE
+
+        # 📰 Smart News Protection (Option C)
+        # ถ้า news_lock + มี position เปิดอยู่ → ใช้ logic พิเศษ
+        if bot_status["news_lock"] and env_pos != 0.0:
+            latest_atr_pct = df_feat.iloc[-1]['atr_pct'] if 'atr_pct' in df_feat.columns else 0.01
+            latest_atr_raw = curr_price * latest_atr_pct
+            
+            if pnl_pct > NEWS_PROFIT_LOCK_PCT:
+                # กำไรดี → ล็อคกำไรก่อน News
+                msg = f"📰 **NEWS LOCK:** Position closed with profit ({pnl_pct*100:.2f}%)"
+                send_telegram_msg(msg)
+                return jsonify({
+                    "action": "CLOSE", 
+                    "reason": "NEWS_PROFIT_LOCK",
+                    "pnl_pct": pnl_pct,
+                    "atr": float(latest_atr_raw),
+                    "message": f"Locked profit before news: {pnl_pct*100:.2f}%"
+                })
+            
+            elif pnl_pct < NEWS_MAX_LOSS_PCT:
+                # ขาดทุนมาก → Cut loss ก่อน News ทำให้แย่ลง
+                msg = f"📰 **NEWS CUT LOSS:** Position closed with loss ({pnl_pct*100:.2f}%)"
+                send_telegram_msg(msg)
+                return jsonify({
+                    "action": "CLOSE", 
+                    "reason": "NEWS_CUT_LOSS",
+                    "pnl_pct": pnl_pct,
+                    "atr": float(latest_atr_raw),
+                    "message": f"Cut loss before news: {pnl_pct*100:.2f}%"
+                })
+            
+            else:
+                # ขาดทุนเล็กน้อย หรือกำไรน้อย → Hold + Tighten SL
+                return jsonify({
+                    "action": "HOLD", 
+                    "reason": "NEWS_TIGHTEN_SL",
+                    "tighten_sl": True,
+                    "sl_atr_mult": NEWS_TIGHT_SL_ATR,
+                    "pnl_pct": pnl_pct,
+                    "atr": float(latest_atr_raw),
+                    "message": f"News approaching - SL tightened to {NEWS_TIGHT_SL_ATR}x ATR"
+                })
 
         # Cooldown State (1=Ready, 0=Busy)
         if cooldown_counter > 0:
